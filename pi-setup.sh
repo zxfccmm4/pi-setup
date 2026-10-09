@@ -819,8 +819,11 @@ wizard() {
   fi
 }
 
+PI_BIN_FOUND=""
+
 if [ "$SKIP_INSTALL" -eq 0 ]; then
   if PI_BIN="$(find_pi)"; then
+    PI_BIN_FOUND="$PI_BIN"
     info "pi already installed: $("$PI_BIN" --version 2>/dev/null || echo "$PI_BIN") - checking for updates"
     update_pi "$PI_BIN"
   else
@@ -833,13 +836,15 @@ if [ "$SKIP_INSTALL" -eq 0 ]; then
     else
       install_pi
     fi
-    PI_BIN="$(find_pi)" || die "pi installed but not found on PATH; open a new shell and re-run"
+    PI_BIN="$(find_pi)" || die "$(lc 'pi was installed but no pi binary was found; check the installer output above' 'pi 已安装但未找到 pi 可执行文件；请查看上方安装器输出')"
+    PI_BIN_FOUND="$PI_BIN"
     info "installed: $("$PI_BIN" --version 2>/dev/null || echo "$PI_BIN")"
   fi
 else
+  PI_BIN="$(find_pi 2>/dev/null)" || true
+  PI_BIN_FOUND="$PI_BIN"
   info "$(lc '--skip-install set, not checking installation' '已指定 --skip-install，跳过安装检查')"
 fi
-
 HAVE_CUSTOMIZE_FLAGS=0
 if [ -n "$THEME" ] || [ -n "$THINKING" ] || [ -n "$TOOLS" ] || [ -n "$HIDE_THINKING" ] || \
    [ -n "$QUIET_STARTUP" ] || [ -n "$CACHE_WARMING" ] || [ -n "$SKILL_COMMANDS" ] || \
@@ -920,10 +925,94 @@ if [ "$NO_CUSTOMIZE" -eq 0 ]; then
   for item in "${KEYBINDINGS[@]+"${KEYBINDINGS[@]}"}"; do CONFIG_ARGS+=(--keybinding "$item"); done
 fi
 
+# The official installer prefers ~/.local/bin, but only when that directory is
+# already on PATH; on a fresh root account it falls back to
+# <agent-dir>/bin (e.g. /root/.pi/agent/bin), which shells do not search.
+# Report that instead of printing a bare `pi` the user cannot run.
+pi_on_path() {
+  local p
+  p="$(command -v pi 2>/dev/null)" || return 1
+  [ -n "$p" ] || return 1
+  is_real_pi "$p"
+}
+
+shell_profile_file() {
+  case "$(basename "${SHELL:-sh}")" in
+    fish) printf '%s/.config/fish/config.fish' "$HOME" ;;
+    zsh) printf '%s/.zshrc' "${ZDOTDIR:-$HOME}" ;;
+    bash)
+      if [ -f "$HOME/.bashrc" ]; then printf '%s/.bashrc' "$HOME"; else printf '%s/.profile' "$HOME"; fi
+      ;;
+    *) printf '%s/.profile' "$HOME" ;;
+  esac
+}
+
+path_export_line() {
+  local dir="$1"
+  case "$(basename "${SHELL:-sh}")" in
+    fish) printf 'fish_add_path %s' "$dir" ;;
+    *) printf 'export PATH="%s:$PATH"' "$dir" ;;
+  esac
+}
+
+path_contains_dir() {
+  case ":${PATH:-}:" in
+    *":$1:"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+report_pi_path() {
+  local bin_dir profile line
+  if pi_on_path; then
+    info "$(lc 'done. Start Pi with:' '完成。用以下命令启动 Pi：')"
+    printf '   cd /path/to/project && pi\n' >&2
+    printf '   %s\n' "$(lc 'authenticate a built-in provider with /login inside Pi' '在 Pi 内用 /login 登录内置 provider')" >&2
+    return 0
+  fi
+
+  if [ -z "$PI_BIN_FOUND" ]; then
+    warn "$(lc 'no pi binary was found; install Pi and re-run this script' '未找到 pi 可执行文件；请安装 Pi 后重新运行本脚本')"
+    return 1
+  fi
+
+  bin_dir="$(dirname "$PI_BIN_FOUND")"
+  profile="$(shell_profile_file)"
+  line="$(path_export_line "$bin_dir")"
+
+  printf '\n' >&2
+  if path_contains_dir "$bin_dir"; then
+    # The directory is already searched; something else named pi wins the lookup.
+    warn "$(lc "'pi' currently resolves to a different program; use the full path below" "'pi' 当前解析到其它程序；请用下面的完整路径")"
+    printf '   %s %s\n' "$(lc 'resolves to' '当前解析为')" "$(command -v pi 2>/dev/null)" >&2
+  else
+    warn "$(lc 'Pi is installed, but its directory is not on your PATH yet' 'Pi 已安装，但其目录还不在 PATH 中')"
+  fi
+  printf '   %s %s\n' "$(lc 'binary' '可执行文件')" "$PI_BIN_FOUND" >&2
+  printf '   %s %s\n' "$(lc 'version' '版本    ')" "$("$PI_BIN_FOUND" --version 2>/dev/null || echo '?')" >&2
+  printf '\n' >&2
+  printf '%s\n' "$(lc 'Run it now with:' '现在可以这样运行：')" >&2
+  printf '   %s\n' "$PI_BIN_FOUND" >&2
+  printf '\n' >&2
+  printf '%s\n' "$(lc 'To use the short pi command, add it to PATH:' '想直接用 pi 命令，把它加入 PATH：')" >&2
+  printf '   %s\n' "$line" >&2
+  printf '\n' >&2
+  if path_contains_dir "$bin_dir"; then
+    printf '   %s\n' "$(lc 'already on PATH - check for a conflicting pi earlier in PATH' '已在 PATH 中 - 请检查 PATH 靠前位置是否有冲突的 pi')" >&2
+  elif [ -n "$line" ] && [ -n "$profile" ] && ! grep -Fxq "$line" "$profile" 2>/dev/null; then
+    if have_tty && ask_yes "$(lc "Append that line to ${profile} now?" "现在就把它追加到 ${profile}？")" "y"; then
+      mkdir -p "${profile%/*}" 2>/dev/null || true
+      if printf '\n# Pi\n%s\n' "$line" >> "$profile" 2>/dev/null; then
+        info "$(lc "updated ${profile} - restart your shell or run: ${line}" "已更新 ${profile} - 重启 shell 或运行：${line}")"
+      else
+        warn "$(lc "could not write ${profile}; add the line above by hand" "无法写入 ${profile}；请手动添加上面的行")"
+      fi
+    fi
+  fi
+  printf '   %s\n' "$(lc 'authenticate a built-in provider with /login inside Pi' '在 Pi 内用 /login 登录内置 provider')" >&2
+}
+
 info "$(lc 'writing config' '正在写入配置')"
 run_config "${CONFIG_ARGS[@]}"
 
-printf '\n' >&2
-info "$(lc 'done. Start Pi with:' '完成。用以下命令启动 Pi：')"
-printf '   cd /path/to/project && pi\n' >&2
-printf '   %s\n' "$(lc 'authenticate a built-in provider with /login inside Pi' '在 Pi 内用 /login 登录内置 provider')" >&2
+report_pi_path

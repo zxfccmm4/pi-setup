@@ -210,6 +210,39 @@ function Test-RealPi($bin) {
   return [bool]($head -match '^pi\s+-') 
 }
 
+function Test-PiOnPath {
+  $cmd = Get-Command pi -ErrorAction SilentlyContinue
+  if (-not $cmd) { return $false }
+  return (Test-RealPi $cmd.Source)
+}
+
+function Show-PiPathGuidance($bin) {
+  if (-not $bin) {
+    Warn (Lc 'no pi binary was found; install Pi and re-run this script' '未找到 pi 可执行文件；请安装 Pi 后重新运行本脚本')
+    return
+  }
+  if (Test-PiOnPath) {
+    Info (Lc 'done. Start Pi with:' '完成。用以下命令启动 Pi：')
+    Write-Host '   cd path\to\project; pi'
+    Write-Host ('   ' + (Lc 'authenticate a built-in provider with /login inside Pi' '在 Pi 内用 /login 登录内置 provider'))
+    return
+  }
+
+  $binDir = Split-Path -Parent $bin
+  Write-Host ''
+  Warn (Lc 'Pi is installed, but its directory is not on your PATH yet' 'Pi 已安装，但其目录还不在 PATH 中')
+  Write-Host "   $(Lc 'binary' '可执行文件') $bin"
+  Write-Host "   $(Lc 'version' '版本    ') $(& $bin --version 2>$null)"
+  Write-Host ''
+  Write-Host (Lc 'Run it now with:' '现在可以这样运行：')
+  Write-Host "   $bin"
+  Write-Host ''
+  Write-Host (Lc 'To use the short pi command, add it to PATH:' '想直接用 pi 命令，把它加入 PATH：')
+  Write-Host "   setx PATH `"$binDir;%PATH%`""
+  Write-Host ''
+  Write-Host ('   ' + (Lc 'authenticate a built-in provider with /login inside Pi' '在 Pi 内用 /login 登录内置 provider'))
+}
+
 function Find-Pi {
   $cmd = Get-Command pi -ErrorAction SilentlyContinue
   if ($cmd) {
@@ -563,6 +596,7 @@ if (-not $SkipInstall) {
     Info "installed: $(& $piBin --version 2>$null)"
   }
 } else {
+  $piBin = Find-Pi
   Info (Lc 'SkipInstall set, not checking installation' '已指定 SkipInstall，跳过安装检查')
 }
 
@@ -640,6 +674,4 @@ else { Die 'need node or bun to write pi config' }
 if ($LASTEXITCODE -ne 0) { Die "config step failed (exit $LASTEXITCODE)" }
 
 Write-Host ''
-Info (Lc 'done. Start Pi with:' '完成。用以下命令启动 Pi：')
-Write-Host '   cd path\to\project; pi'
-Write-Host ('   ' + (Lc 'authenticate a built-in provider with /login inside Pi' '在 Pi 内用 /login 登录内置 provider'))
+Show-PiPathGuidance $piBin
